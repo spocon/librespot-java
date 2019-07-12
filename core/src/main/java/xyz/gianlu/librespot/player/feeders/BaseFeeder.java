@@ -7,6 +7,7 @@ import org.jetbrains.annotations.Nullable;
 import xyz.gianlu.librespot.cdn.CdnManager;
 import xyz.gianlu.librespot.common.Utils;
 import xyz.gianlu.librespot.core.Session;
+import xyz.gianlu.librespot.debug.TimingsDebugger;
 import xyz.gianlu.librespot.mercury.MercuryClient;
 import xyz.gianlu.librespot.mercury.MercuryRequests;
 import xyz.gianlu.librespot.mercury.model.EpisodeId;
@@ -69,6 +70,8 @@ public abstract class BaseFeeder {
     }
 
     public final @NotNull LoadedStream loadTrack(@NotNull TrackId id, @NotNull AudioQualityPreference audioQualityPreference, @Nullable AbsChunckedInputStream.HaltListener haltListener) throws IOException, MercuryClient.MercuryException, ContentRestrictedException, CdnManager.CdnException {
+        TimingsDebugger.start("cdn-load-track");
+
         Metadata.Track original = session.mercury().sendSync(MercuryRequests.getTrack(id)).proto();
         Metadata.Track track = pickAlternativeIfNecessary(original);
         if (track == null) {
@@ -79,7 +82,9 @@ public abstract class BaseFeeder {
             throw new FeederException();
         }
 
-        return loadTrack(track, audioQualityPreference, haltListener);
+        LoadedStream stream = loadTrack(track, audioQualityPreference, haltListener);
+        TimingsDebugger.end("cdn-load-track");
+        return stream;
     }
 
     @NotNull
@@ -97,6 +102,8 @@ public abstract class BaseFeeder {
     public abstract LoadedStream loadTrack(@NotNull Metadata.Track track, @NotNull Metadata.AudioFile file, @Nullable AbsChunckedInputStream.HaltListener haltListener) throws IOException, CdnManager.CdnException, MercuryClient.MercuryException;
 
     public final @NotNull LoadedStream loadEpisode(@NotNull EpisodeId id, @Nullable AbsChunckedInputStream.HaltListener haltListener) throws IOException, MercuryClient.MercuryException, CdnManager.CdnException {
+        TimingsDebugger.start("cdn-load-episode");
+
         Metadata.Episode episode = session.mercury().sendSync(MercuryRequests.getEpisode(id)).proto();
 
         Metadata.AudioFile file = null;
@@ -115,7 +122,9 @@ public abstract class BaseFeeder {
             throw new FeederException();
         }
 
-        return loadEpisode(episode, file, haltListener);
+        LoadedStream stream = loadEpisode(episode, file, haltListener);
+        TimingsDebugger.end("cdn-load-episode");
+        return stream;
     }
 
     @NotNull
