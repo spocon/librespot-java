@@ -19,6 +19,7 @@ import xyz.gianlu.librespot.crypto.PBKDF2;
 import xyz.gianlu.librespot.crypto.Packet;
 import xyz.gianlu.librespot.dealer.ApiClient;
 import xyz.gianlu.librespot.dealer.DealerClient;
+import xyz.gianlu.librespot.debug.TimingsDebugger;
 import xyz.gianlu.librespot.mercury.MercuryClient;
 import xyz.gianlu.librespot.player.AudioKeyManager;
 import xyz.gianlu.librespot.player.Player;
@@ -114,6 +115,8 @@ public class Session implements Closeable {
 
     void connect() throws IOException, GeneralSecurityException, SpotifyAuthenticationException {
         Accumulator acc = new Accumulator();
+
+        TimingsDebugger.start("session-connect");
 
         // Send ClientHello
 
@@ -241,10 +244,14 @@ public class Session implements Closeable {
             authLock.set(true);
         }
 
+        TimingsDebugger.end("session-connect");
+
         LOGGER.info("Connected successfully!");
     }
 
     void authenticate(@NotNull Authentication.LoginCredentials credentials) throws IOException, GeneralSecurityException, SpotifyAuthenticationException, MercuryClient.MercuryException {
+        TimingsDebugger.start("session-authenticate");
+
         authenticatePartial(credentials);
 
         mercuryClient = new MercuryClient(this);
@@ -256,6 +263,8 @@ public class Session implements Closeable {
         cacheManager = new CacheManager(inner.configuration);
         dealer = new DealerClient(this);
         player = new Player(inner.configuration, this);
+
+        TimingsDebugger.end("session-authenticate");
 
         LOGGER.info(String.format("Authenticated as %s!", apWelcome.getCanonicalUsername()));
     }

@@ -21,6 +21,7 @@ import xyz.gianlu.librespot.AbsConfiguration;
 import xyz.gianlu.librespot.FileConfiguration;
 import xyz.gianlu.librespot.Version;
 import xyz.gianlu.librespot.core.Session;
+import xyz.gianlu.librespot.debug.TimingsDebugger;
 import xyz.gianlu.librespot.mercury.MercuryClient;
 
 import java.awt.*;
@@ -80,6 +81,7 @@ public class Main {
         }
 
         AbsConfiguration conf = new FileConfiguration(new File("conf.properties"), args);
+        TimingsDebugger.init(conf.enableTimingsDebugger());
         Session.Builder s = new Session.Builder(conf);
 
         DefaultTerminalFactory factory = new DefaultTerminalFactory();

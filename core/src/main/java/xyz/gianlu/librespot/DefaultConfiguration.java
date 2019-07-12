@@ -100,6 +100,11 @@ public final class DefaultConfiguration extends AbsConfiguration {
     }
 
     @Override
+    public boolean enableTimingsDebugger() {
+        return false;
+    }
+
+    @Override
     public @Nullable String authUsername() {
         return null;
     }

@@ -175,6 +175,11 @@ public final class FileConfiguration extends AbsConfiguration {
     }
 
     @Override
+    public boolean enableTimingsDebugger() {
+        return getBoolean("debug.enableTimingsDebugger", defaults.enableTimingsDebugger());
+    }
+
+    @Override
     public @Nullable String authUsername() {
         return properties.getProperty("auth.username", null);
     }

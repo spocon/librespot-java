@@ -17,4 +17,6 @@ public abstract class AbsConfiguration implements Player.Configuration, CacheMan
 
     @Nullable
     public abstract Connect.DeviceType deviceType();
+
+    public abstract boolean enableTimingsDebugger();
 }

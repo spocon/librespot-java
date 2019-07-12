@@ -11,6 +11,7 @@ import xyz.gianlu.librespot.common.Utils;
 import xyz.gianlu.librespot.connectstate.DeviceStateHandler;
 import xyz.gianlu.librespot.connectstate.DeviceStateHandler.PlayCommandWrapper;
 import xyz.gianlu.librespot.core.Session;
+import xyz.gianlu.librespot.debug.TimingsDebugger;
 import xyz.gianlu.librespot.mercury.MercuryClient;
 import xyz.gianlu.librespot.mercury.MercuryRequests;
 import xyz.gianlu.librespot.mercury.model.PlayableId;
@@ -305,6 +306,8 @@ public class Player implements TrackHandler.Listener, Closeable, DeviceStateHand
     }
 
     private void loadTrack(boolean play) {
+        TimingsDebugger.start("load-track");
+
         if (trackHandler != null) trackHandler.close();
 
         boolean buffering = preloadTrackHandler == null && conf.enableLoadingState();
@@ -325,6 +328,8 @@ public class Player implements TrackHandler.Listener, Closeable, DeviceStateHand
         if (play) state.setState(true, false, buffering);
         else state.setState(false, true, buffering);
         state.updated();
+
+        TimingsDebugger.end("load-track");
     }
 
     private void handleResume() {

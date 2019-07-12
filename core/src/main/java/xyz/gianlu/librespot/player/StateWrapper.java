@@ -21,6 +21,7 @@ import xyz.gianlu.librespot.connectstate.DeviceStateHandler.PlayCommandWrapper;
 import xyz.gianlu.librespot.connectstate.RestrictionsManager;
 import xyz.gianlu.librespot.core.Session;
 import xyz.gianlu.librespot.core.TimeProvider;
+import xyz.gianlu.librespot.debug.TimingsDebugger;
 import xyz.gianlu.librespot.mercury.MercuryClient;
 import xyz.gianlu.librespot.mercury.model.*;
 import xyz.gianlu.librespot.player.contexts.AbsSpotifyContext;
@@ -333,6 +334,8 @@ public class StateWrapper implements DeviceStateHandler.Listener {
     }
 
     void transfer(@NotNull TransferStateOuterClass.TransferState cmd) throws AbsSpotifyContext.UnsupportedContextException, IOException, MercuryClient.MercuryException {
+        TimingsDebugger.start("transfer-context");
+
         SessionOuterClass.Session ps = cmd.getCurrentSession();
 
         state.setPlayOrigin(ProtoUtils.convertPlayOrigin(ps.getPlayOrigin()));
@@ -342,12 +345,15 @@ public class StateWrapper implements DeviceStateHandler.Listener {
         Playback pb = cmd.getPlayback();
         tracksKeeper.initializeFrom(tracks -> ProtoUtils.indexOfTrackByUid(tracks, ps.getCurrentUid()), pb.getCurrentTrack(), cmd.getQueue(), false);
 
-
         state.setPositionAsOfTimestamp(pb.getPositionAsOfTimestamp());
         state.setTimestamp(pb.getTimestamp());
+
+        TimingsDebugger.end("transfer-context");
     }
 
     void load(@NotNull JsonObject obj) throws AbsSpotifyContext.UnsupportedContextException, IOException, MercuryClient.MercuryException {
+        TimingsDebugger.start("load-context-json");
+
         state.setPlayOrigin(ProtoUtils.jsonToPlayOrigin(PlayCommandWrapper.getPlayOrigin(obj)));
         state.setOptions(ProtoUtils.jsonToPlayerOptions((PlayCommandWrapper.getPlayerOptionsOverride(obj))));
         setContext(ProtoUtils.jsonToContext(PlayCommandWrapper.getContext(obj)));
@@ -372,6 +378,8 @@ public class StateWrapper implements DeviceStateHandler.Listener {
         Integer seekTo = PlayCommandWrapper.getSeekTo(obj);
         if (seekTo != null) setPosition(seekTo);
         else setPosition(0);
+
+        TimingsDebugger.end("load-context-json");
     }
 
     synchronized void updateContext(@NotNull JsonObject obj) {
