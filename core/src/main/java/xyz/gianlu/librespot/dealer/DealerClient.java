@@ -3,7 +3,10 @@ package xyz.gianlu.librespot.dealer;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import okhttp3.*;
+import okhttp3.Request;
+import okhttp3.Response;
+import okhttp3.WebSocket;
+import okhttp3.WebSocketListener;
 import org.apache.log4j.Logger;
 import org.jetbrains.annotations.NotNull;
 import xyz.gianlu.librespot.common.NameThreadFactory;
@@ -13,6 +16,7 @@ import xyz.gianlu.librespot.mercury.MercuryClient;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.net.SocketException;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
@@ -35,6 +39,7 @@ public class DealerClient extends WebSocketListener implements Closeable {
     private WebSocket ws;
     private volatile boolean receivedPong = false;
     private volatile boolean reconnecting = false;
+    private volatile boolean closed = false;
 
     public DealerClient(@NotNull Session session) throws IOException, MercuryClient.MercuryException {
         this.session = session;
@@ -44,7 +49,7 @@ public class DealerClient extends WebSocketListener implements Closeable {
     private void connect() throws IOException, MercuryClient.MercuryException {
         if (ws != null) ws.cancel();
 
-        this.ws = new OkHttpClient().newWebSocket(new Request.Builder()
+        this.ws = session.client().newWebSocket(new Request.Builder()
                 .url(String.format("wss://%s/?access_token=%s", ApResolver.getRandomDealer(), session.tokens().get("playlist-read")))
                 .build(), this);
     }
@@ -68,6 +73,8 @@ public class DealerClient extends WebSocketListener implements Closeable {
     }
 
     private void wentAway() {
+        if (reconnecting || closed) return;
+
         ws.cancel();
         lastScheduledPing.cancel(true);
         lastScheduledPing = null;
@@ -92,12 +99,20 @@ public class DealerClient extends WebSocketListener implements Closeable {
 
     @Override
     public void onFailure(@NotNull WebSocket webSocket, @NotNull Throwable t, Response response) {
-        LOGGER.error("Unexpected failure when handling message!", t);
+        if (closed) return;
 
         if (reconnecting) {
-            LOGGER.error("Failed reconnecting, retrying in 10 seconds...");
+            LOGGER.error("Failed reconnecting, retrying in 10 seconds...", t);
             scheduler.schedule(this::reconnect, 10, TimeUnit.SECONDS);
+            return;
         }
+
+        if (t instanceof SocketException) {
+            wentAway();
+            return;
+        }
+
+        LOGGER.error("Unexpected failure when handling message!", t);
     }
 
     @Override
@@ -221,7 +236,10 @@ public class DealerClient extends WebSocketListener implements Closeable {
 
     @Override
     public void close() {
+        closed = true;
         ws.close(1000, null);
+
+        listeners.clear();
     }
 
     public interface MessageListener {

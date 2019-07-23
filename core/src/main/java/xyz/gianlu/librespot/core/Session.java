@@ -2,6 +2,7 @@ package xyz.gianlu.librespot.core;
 
 import com.google.protobuf.ByteString;
 import com.spotify.connectstate.model.Connect;
+import okhttp3.OkHttpClient;
 import org.apache.log4j.Logger;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -75,6 +76,7 @@ public class Session implements Closeable {
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(new NameThreadFactory(r -> "session-scheduler-" + r.hashCode()));
     private final ExecutorService executorService = Executors.newCachedThreadPool(new NameThreadFactory(r -> "handle-packet-" + r.hashCode()));
     private final AtomicBoolean authLock = new AtomicBoolean(false);
+    private final OkHttpClient client = new OkHttpClient();
     private ConnectionHolder conn;
     private CipherPair cipherPair;
     private Receiver receiver;
@@ -109,7 +111,13 @@ public class Session implements Closeable {
 
     @NotNull
     static Session from(@NotNull Inner inner) throws IOException {
+        ApResolver.fillPool();
         return new Session(inner, ApResolver.getSocketFromRandomAccessPoint());
+    }
+
+    @NotNull
+    public OkHttpClient client() {
+        return client;
     }
 
     void connect() throws IOException, GeneralSecurityException, SpotifyAuthenticationException {
@@ -215,7 +223,7 @@ public class Session implements Closeable {
 
         try {
             byte[] scrap = new byte[4];
-            conn.socket.setSoTimeout((int) TimeUnit.SECONDS.toMillis(1));
+            conn.socket.setSoTimeout(300);
             int read = conn.in.read(scrap);
             if (read == scrap.length) {
                 length = (scrap[0] << 24) | (scrap[1] << 16) | (scrap[2] << 8) | (scrap[3] & 0xFF);
@@ -645,8 +653,6 @@ public class Session implements Closeable {
                     throw new IllegalStateException("Missing credentials!");
                 }
             }
-
-            ApResolver.fillPool();
 
             Session session = Session.from(inner);
             session.connect();
