@@ -8,14 +8,19 @@ import xyz.gianlu.librespot.player.contexts.AbsSpotifyContext;
  * @author Gianlu
  */
 public final class RestrictionsManager {
+    public static final String REASON_ENDLESS_CONTEXT = "endless_context";
+    public static final String REASON_NOT_PAUSED = "not_paused";
+    public static final String REASON_ALREADY_PAUSED = "already_paused";
+    public static final String REASON_NO_PREV_TRACK = "no_prev_track";
+    public static final String REASON_NO_NEXT_TRACK = "no_next_track";
     private final Player.Restrictions.Builder restrictions;
 
-    public RestrictionsManager(@NotNull AbsSpotifyContext<?> context) {
+    public RestrictionsManager(@NotNull AbsSpotifyContext context) {
         restrictions = Player.Restrictions.newBuilder();
 
         if (!context.isFinite()) {
-            disallow(Action.SHUFFLE, "infinite-context");
-            disallow(Action.REPEAT_CONTEXT, "infinite-context");
+            disallow(Action.SHUFFLE, REASON_ENDLESS_CONTEXT);
+            disallow(Action.REPEAT_CONTEXT, REASON_ENDLESS_CONTEXT);
         }
     }
 
@@ -73,6 +78,8 @@ public final class RestrictionsManager {
             case SKIP_NEXT:
                 restrictions.clearDisallowSkippingNextReasons();
                 break;
+            default:
+                throw new IllegalArgumentException("Unknown restriction for " + action);
         }
     }
 
@@ -104,6 +111,8 @@ public final class RestrictionsManager {
             case SKIP_NEXT:
                 restrictions.addDisallowSkippingNextReasons(reason);
                 break;
+            default:
+                throw new IllegalArgumentException("Unknown restriction for " + action);
         }
     }
 

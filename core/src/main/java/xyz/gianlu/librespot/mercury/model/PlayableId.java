@@ -1,8 +1,10 @@
 package xyz.gianlu.librespot.mercury.model;
 
 import com.spotify.connectstate.model.Player;
+import com.spotify.metadata.proto.Metadata;
 import org.jetbrains.annotations.NotNull;
 import spotify.player.proto.ContextTrackOuterClass.ContextTrack;
+import xyz.gianlu.librespot.common.Utils;
 
 import java.util.List;
 
@@ -37,7 +39,7 @@ public interface PlayableId {
     }
 
     static boolean isSupported(@NotNull String uri) {
-        return !uri.startsWith("spotify:local:") && !uri.equals("spotify:delimiter");
+        return !uri.startsWith("spotify:local:") && !uri.equals("spotify:delimiter") && !uri.equals("spotify:meta:delimiter");
     }
 
     static boolean shouldPlay(@NotNull ContextTrack track) {
@@ -49,6 +51,19 @@ public interface PlayableId {
     static PlayableId from(@NotNull ContextTrack track) {
         return fromUri(track.getUri());
     }
+
+    @NotNull
+    static PlayableId from(@NotNull Metadata.Track track) {
+        return TrackId.fromHex(Utils.bytesToHex(track.getGid()));
+    }
+
+    @NotNull
+    static PlayableId from(@NotNull Metadata.Episode episode) {
+        return EpisodeId.fromHex(Utils.bytesToHex(episode.getGid()));
+    }
+
+    @NotNull
+    String toString();
 
     @NotNull byte[] getGid();
 

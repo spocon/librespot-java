@@ -1,19 +1,24 @@
 package xyz.gianlu.librespot;
 
+import com.electronwill.nightconfig.core.CommentedConfig;
 import com.electronwill.nightconfig.core.Config;
 import com.electronwill.nightconfig.core.ConfigFormat;
+import com.electronwill.nightconfig.core.UnmodifiableCommentedConfig;
 import com.electronwill.nightconfig.core.file.CommentedFileConfig;
 import com.electronwill.nightconfig.core.file.FileConfig;
 import com.electronwill.nightconfig.core.file.FileNotFoundAction;
 import com.electronwill.nightconfig.core.file.FormatDetector;
 import com.electronwill.nightconfig.core.io.ConfigParser;
 import com.electronwill.nightconfig.core.io.ConfigWriter;
+import com.electronwill.nightconfig.toml.TomlParser;
 import com.spotify.connectstate.model.Connect;
 import org.apache.log4j.Logger;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import xyz.gianlu.librespot.common.Utils;
+import xyz.gianlu.librespot.core.TimeProvider;
 import xyz.gianlu.librespot.core.ZeroconfServer;
+import xyz.gianlu.librespot.player.AudioOutput;
 import xyz.gianlu.librespot.player.PlayerRunner;
 import xyz.gianlu.librespot.player.codecs.AudioQuality;
 
@@ -21,6 +26,7 @@ import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.ArrayList;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
@@ -38,12 +44,12 @@ public final class FileConfiguration extends AbsConfiguration {
 
     private final CommentedFileConfig config;
 
-    public FileConfiguration(@Nullable String[] override) throws IOException {
+    public FileConfiguration(@Nullable String... override) throws IOException {
         File confFile = null;
-        if (override != null) {
+        if (override != null && override.length > 0) {
             for (String arg : override) {
                 if (arg != null && arg.startsWith("--conf-file="))
-                    confFile = new File(arg.substring(13));
+                    confFile = new File(arg.substring(12));
             }
         }
 
@@ -56,10 +62,7 @@ public final class FileConfiguration extends AbsConfiguration {
 
         boolean migrating = FormatDetector.detect(confFile) instanceof PropertiesFormat;
 
-        InputStream defaultConfig = FileConfiguration.class.getClassLoader().getResourceAsStream("default.toml");
-        if (defaultConfig == null) throw new IllegalStateException();
-
-        config = CommentedFileConfig.builder(migrating ? new File("config.toml") : confFile).onFileNotFound(FileNotFoundAction.copyData(defaultConfig)).build();
+        config = CommentedFileConfig.builder(migrating ? new File("config.toml") : confFile).onFileNotFound(FileNotFoundAction.copyData(streamDefaultConfig())).build();
         config.load();
 
         if (migrating) {
@@ -68,6 +71,8 @@ public final class FileConfiguration extends AbsConfiguration {
             confFile.delete();
 
             LOGGER.info("Your configuration has been migrated to `config.toml`, change your input file if needed.");
+        } else {
+            updateConfigFile(new TomlParser().parse(streamDefaultConfig()));
         }
 
         if (override != null && override.length > 0) {
@@ -90,10 +95,53 @@ public final class FileConfiguration extends AbsConfiguration {
         }
     }
 
+    private static boolean removeDeprecatedKeys(@NotNull Config defaultConfig, @NotNull Config config, @NotNull FileConfig base, @NotNull String prefix) {
+        boolean save = false;
+
+        for (Config.Entry entry : new ArrayList<>(config.entrySet())) {
+            String key = prefix + entry.getKey();
+            if (entry.getValue() instanceof Config) {
+                if (removeDeprecatedKeys(defaultConfig, entry.getValue(), base, key + "."))
+                    save = true;
+            } else {
+                if (!defaultConfig.contains(key)) {
+                    LOGGER.trace("Removed entry from configuration file: " + key);
+                    base.remove(key);
+                    save = true;
+                }
+            }
+        }
+
+        return save;
+    }
+
+    private static boolean checkMissingKeys(@NotNull Config defaultConfig, @NotNull FileConfig config, @NotNull String prefix) {
+        boolean save = false;
+
+        for (Config.Entry entry : defaultConfig.entrySet()) {
+            String key = prefix + entry.getKey();
+            if (entry.getValue() instanceof Config) {
+                if (checkMissingKeys(entry.getValue(), config, key + "."))
+                    save = true;
+            } else {
+                if (!config.contains(key)) {
+                    LOGGER.trace("Added new entry to configuration file: " + key);
+                    config.set(key, entry.getValue());
+                    save = true;
+                }
+            }
+        }
+
+        return save;
+    }
+
     @NotNull
     private static Object convertFromString(@NotNull String key, @NotNull String value) {
         if (Objects.equals(key, "player.normalisationPregain")) {
             return Float.parseFloat(value);
+        } else if (Objects.equals(key, "deviceType")) {
+            if (value.equals("AudioDongle")) return "AUDIO_DONGLE";
+            else return value.toUpperCase();
         } else if ("true".equals(value) || "false".equals(value)) {
             return Boolean.parseBoolean(value);
         } else {
@@ -118,15 +166,37 @@ public final class FileConfiguration extends AbsConfiguration {
     }
 
     @NotNull
+    private static InputStream streamDefaultConfig() {
+        InputStream defaultConfig = FileConfiguration.class.getClassLoader().getResourceAsStream("default.toml");
+        if (defaultConfig == null) throw new IllegalStateException();
+        return defaultConfig;
+    }
+
+    private void updateConfigFile(@NotNull CommentedConfig defaultConfig) {
+        boolean save = checkMissingKeys(defaultConfig, config, "");
+        if (removeDeprecatedKeys(defaultConfig, config, config, "")) save = true;
+
+        if (save) {
+            config.clearComments();
+
+            for (Map.Entry<String, UnmodifiableCommentedConfig.CommentNode> entry : defaultConfig.getComments().entrySet()) {
+                UnmodifiableCommentedConfig.CommentNode node = entry.getValue();
+                if (config.contains(entry.getKey())) {
+                    config.setComment(entry.getKey(), node.getComment());
+                    Map<String, UnmodifiableCommentedConfig.CommentNode> children = node.getChildren();
+                    if (children != null) ((CommentedConfig) config.getRaw(entry.getKey())).putAllComments(children);
+                }
+            }
+
+            config.save();
+        }
+    }
+
+    @NotNull
     private String[] getStringArray(@NotNull String key, char separator) {
         String str = config.get(key);
         if ((str = str.trim()).isEmpty()) return new String[0];
         else return Utils.split(str, separator);
-    }
-
-    @NotNull
-    private File getFile(@NotNull String path) {
-        return new File((String) config.get(path));
     }
 
     @Override
@@ -136,7 +206,7 @@ public final class FileConfiguration extends AbsConfiguration {
 
     @Override
     public @NotNull File cacheDir() {
-        return getFile("cache.dir");
+        return new File((String) config.get("cache.dir"));
     }
 
     @Override
@@ -150,8 +220,25 @@ public final class FileConfiguration extends AbsConfiguration {
     }
 
     @Override
+    public @NotNull AudioOutput output() {
+        return config.getEnum("player.output", AudioOutput.class);
+    }
+
+    @Override
+    public @Nullable File outputPipe() {
+        String path = config.get("player.pipe");
+        if (path == null || path.isEmpty()) return null;
+        return new File(path);
+    }
+
+    @Override
     public boolean preloadEnabled() {
         return config.get("preload.enabled");
+    }
+
+    @Override
+    public boolean enableNormalisation() {
+        return config.get("player.enableNormalisation");
     }
 
     @Override
@@ -193,20 +280,14 @@ public final class FileConfiguration extends AbsConfiguration {
         return config.get("player.autoplayEnabled");
     }
 
-
     @Override
-    public boolean useCdnForTracks() {
-        return config.get("player.tracks.useCdn");
+    public int crossfadeDuration() {
+        return config.get("player.crossfadeDuration");
     }
 
     @Override
-    public boolean useCdnForEpisodes() {
-        return config.get("player.episodes.useCdn");
-    }
-
-    @Override
-    public boolean enableLoadingState() {
-        return config.get("player.enableLoadingState");
+    public int releaseLineDelay() {
+        return config.get("player.releaseLineDelay");
     }
 
     @Override
@@ -217,6 +298,11 @@ public final class FileConfiguration extends AbsConfiguration {
     @Override
     public @Nullable Connect.DeviceType deviceType() {
         return config.getEnum("deviceType", Connect.DeviceType.class);
+    }
+
+    @Override
+    public @NotNull String preferredLocale() {
+        return config.get("preferredLocale");
     }
 
     @Override
@@ -260,6 +346,16 @@ public final class FileConfiguration extends AbsConfiguration {
     @Override
     public String[] zeroconfInterfaces() {
         return getStringArray("zeroconf.interfaces", ',');
+    }
+
+    @Override
+    public TimeProvider.@NotNull Method timeSynchronizationMethod() {
+        return config.getEnum("time.synchronizationMethod", TimeProvider.Method.class);
+    }
+
+    @Override
+    public int timeManualCorrection() {
+        return config.get("time.manualCorrection");
     }
 
     private final static class PropertiesFormat implements ConfigFormat<Config> {

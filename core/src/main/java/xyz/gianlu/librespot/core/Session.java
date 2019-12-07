@@ -9,7 +9,6 @@ import org.jetbrains.annotations.Nullable;
 import xyz.gianlu.librespot.AbsConfiguration;
 import xyz.gianlu.librespot.Version;
 import xyz.gianlu.librespot.cache.CacheManager;
-import xyz.gianlu.librespot.cdn.CdnManager;
 import xyz.gianlu.librespot.common.NameThreadFactory;
 import xyz.gianlu.librespot.common.Utils;
 import xyz.gianlu.librespot.common.proto.Authentication;
@@ -23,6 +22,8 @@ import xyz.gianlu.librespot.dealer.DealerClient;
 import xyz.gianlu.librespot.mercury.MercuryClient;
 import xyz.gianlu.librespot.player.AudioKeyManager;
 import xyz.gianlu.librespot.player.Player;
+import xyz.gianlu.librespot.player.feeders.PlayableContentFeeder;
+import xyz.gianlu.librespot.player.feeders.cdn.CdnManager;
 import xyz.gianlu.librespot.player.feeders.storage.ChannelManager;
 
 import javax.crypto.Cipher;
@@ -44,9 +45,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * @author Gianlu
  */
-public class Session implements Closeable {
+public final class Session implements Closeable {
     private static final Logger LOGGER = Logger.getLogger(Session.class);
-    private static final String PREFERRED_LOCALE = "en";
     private static final byte[] serverKey = new byte[]{
             (byte) 0xac, (byte) 0xe0, (byte) 0x46, (byte) 0x0b, (byte) 0xff, (byte) 0xc2, (byte) 0x30, (byte) 0xaf, (byte) 0xf4, (byte) 0x6b, (byte) 0xfe, (byte) 0xc3,
             (byte) 0xbf, (byte) 0xbf, (byte) 0x86, (byte) 0x3d, (byte) 0xa1, (byte) 0x91, (byte) 0xc6, (byte) 0xcc, (byte) 0x33, (byte) 0x6c, (byte) 0x93, (byte) 0xa1,
@@ -76,7 +76,7 @@ public class Session implements Closeable {
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(new NameThreadFactory(r -> "session-scheduler-" + r.hashCode()));
     private final ExecutorService executorService = Executors.newCachedThreadPool(new NameThreadFactory(r -> "handle-packet-" + r.hashCode()));
     private final AtomicBoolean authLock = new AtomicBoolean(false);
-    private final OkHttpClient client = new OkHttpClient();
+    private final OkHttpClient client = new OkHttpClient.Builder().retryOnConnectionFailure(true).build();
     private ConnectionHolder conn;
     private CipherPair cipherPair;
     private Receiver receiver;
@@ -90,6 +90,8 @@ public class Session implements Closeable {
     private CacheManager cacheManager;
     private DealerClient dealer;
     private ApiClient api;
+    private SearchManager search;
+    private PlayableContentFeeder contentFeeder;
     private String countryCode = null;
     private volatile boolean closed = false;
     private volatile ScheduledFuture<?> scheduledReconnect = null;
@@ -112,6 +114,7 @@ public class Session implements Closeable {
     @NotNull
     static Session from(@NotNull Inner inner) throws IOException {
         ApResolver.fillPool();
+        TimeProvider.init(inner.configuration);
         return new Session(inner, ApResolver.getSocketFromRandomAccessPoint());
     }
 
@@ -129,11 +132,7 @@ public class Session implements Closeable {
         inner.random.nextBytes(nonce);
 
         Keyexchange.ClientHello clientHello = Keyexchange.ClientHello.newBuilder()
-                .setBuildInfo(Keyexchange.BuildInfo.newBuilder()
-                        .setProduct(Keyexchange.Product.PRODUCT_PARTNER)
-                        .setPlatform(Keyexchange.Platform.PLATFORM_LINUX_X86)
-                        .setVersion(111000540)
-                        .build())
+                .setBuildInfo(Version.standardBuildInfo())
                 .addCryptosuitesSupported(Keyexchange.Cryptosuite.CRYPTO_SUITE_SHANNON)
                 .setLoginCryptoHello(Keyexchange.LoginCryptoHelloUnion.newBuilder()
                         .setDiffieHellman(Keyexchange.LoginCryptoDiffieHellmanHello.newBuilder()
@@ -206,13 +205,10 @@ public class Session implements Closeable {
         Keyexchange.ClientResponsePlaintext clientResponsePlaintext = Keyexchange.ClientResponsePlaintext.newBuilder()
                 .setLoginCryptoResponse(Keyexchange.LoginCryptoResponseUnion.newBuilder()
                         .setDiffieHellman(Keyexchange.LoginCryptoDiffieHellmanResponse.newBuilder()
-                                .setHmac(ByteString.copyFrom(challenge))
-                                .build())
+                                .setHmac(ByteString.copyFrom(challenge)).build())
                         .build())
-                .setPowResponse(Keyexchange.PoWResponseUnion.newBuilder()
-                        .build())
-                .setCryptoResponse(Keyexchange.CryptoResponseUnion.newBuilder()
-                        .build())
+                .setPowResponse(Keyexchange.PoWResponseUnion.newBuilder().build())
+                .setCryptoResponse(Keyexchange.CryptoResponseUnion.newBuilder().build())
                 .build();
 
         byte[] clientResponsePlaintextBytes = clientResponsePlaintext.toByteArray();
@@ -252,25 +248,46 @@ public class Session implements Closeable {
         LOGGER.info("Connected successfully!");
     }
 
+    /**
+     * Authenticates with the server and creates all the necessary components.
+     * All of them should be initialized inside the synchronized block and MUST NOT call any method on this {@link Session} object.
+     */
     void authenticate(@NotNull Authentication.LoginCredentials credentials) throws IOException, GeneralSecurityException, SpotifyAuthenticationException, MercuryClient.MercuryException {
-        authenticatePartial(credentials);
+        authenticatePartial(credentials, false);
 
-        mercuryClient = new MercuryClient(this);
-        tokenProvider = new TokenProvider(this);
-        audioKeyManager = new AudioKeyManager(this);
-        channelManager = new ChannelManager(this);
-        api = new ApiClient(this);
-        cdnManager = new CdnManager(this);
-        cacheManager = new CacheManager(inner.configuration);
-        dealer = new DealerClient(this);
-        player = new Player(inner.configuration, this);
+        synchronized (authLock) {
+            mercuryClient = new MercuryClient(this);
+            tokenProvider = new TokenProvider(this);
+            audioKeyManager = new AudioKeyManager(this);
+            channelManager = new ChannelManager(this);
+            api = new ApiClient(this);
+            cdnManager = new CdnManager(this);
+            contentFeeder = new PlayableContentFeeder(this);
+            cacheManager = new CacheManager(inner.configuration);
+            dealer = new DealerClient(this);
+            player = new Player(inner.configuration, this);
+            search = new SearchManager(this);
 
-        TimeProvider.update(this);
+            authLock.set(false);
+            authLock.notifyAll();
+        }
+
+        dealer.connect();
+        player.initState();
+
+        TimeProvider.init(this);
 
         LOGGER.info(String.format("Authenticated as %s!", apWelcome.getCanonicalUsername()));
     }
 
-    private void authenticatePartial(@NotNull Authentication.LoginCredentials credentials) throws IOException, GeneralSecurityException, SpotifyAuthenticationException {
+    /**
+     * Authenticates with the server. Does not create all the components unlike {@link Session#authenticate(Authentication.LoginCredentials)}.
+     *
+     * @param removeLock Whether {@link Session#authLock} should be released or not.
+     *                   {@code false} for {@link Session#authenticate(Authentication.LoginCredentials)},
+     *                   {@code true} for {@link Session#reconnect()}.
+     */
+    private void authenticatePartial(@NotNull Authentication.LoginCredentials credentials, boolean removeLock) throws IOException, GeneralSecurityException, SpotifyAuthenticationException {
         if (cipherPair == null) throw new IllegalStateException("Connection not established!");
 
         Authentication.ClientResponseEncrypted clientResponseEncrypted = Authentication.ClientResponseEncrypted.newBuilder()
@@ -300,12 +317,14 @@ public class Session implements Closeable {
             ByteBuffer preferredLocale = ByteBuffer.allocate(18 + 5);
             preferredLocale.put((byte) 0x0).put((byte) 0x0).put((byte) 0x10).put((byte) 0x0).put((byte) 0x02);
             preferredLocale.put("preferred-locale".getBytes());
-            preferredLocale.put(PREFERRED_LOCALE.getBytes());
+            preferredLocale.put(inner.configuration.preferredLocale().getBytes());
             sendUnchecked(Packet.Type.PreferredLocale, preferredLocale.array());
 
-            synchronized (authLock) {
-                authLock.set(false);
-                authLock.notifyAll();
+            if (removeLock) {
+                synchronized (authLock) {
+                    authLock.set(false);
+                    authLock.notifyAll();
+                }
             }
         } else if (packet.is(Packet.Type.AuthFailure)) {
             throw new SpotifyAuthenticationException(Keyexchange.APLoginFailed.parseFrom(packet.payload));
@@ -368,7 +387,7 @@ public class Session implements Closeable {
                 try {
                     authLock.wait();
                 } catch (InterruptedException ex) {
-                    throw new RuntimeException(ex);
+                    throw new IllegalStateException(ex);
                 }
             }
         }
@@ -436,10 +455,29 @@ public class Session implements Closeable {
     }
 
     @NotNull
+    public PlayableContentFeeder contentFeeder() {
+        waitAuthLock();
+        if (contentFeeder == null) throw new IllegalStateException("Session isn't authenticated!");
+        return contentFeeder;
+    }
+
+    @NotNull
     public Player player() {
         waitAuthLock();
         if (player == null) throw new IllegalStateException("Session isn't authenticated!");
         return player;
+    }
+
+    @NotNull
+    public SearchManager search() {
+        waitAuthLock();
+        if (search == null) throw new IllegalStateException("Session isn't authenticated!");
+        return search;
+    }
+
+    @NotNull
+    public String username() {
+        return apWelcome().getCanonicalUsername();
     }
 
     @NotNull
@@ -450,8 +488,10 @@ public class Session implements Closeable {
     }
 
     public boolean valid() {
+        if (closed) return false;
+
         waitAuthLock();
-        return apWelcome != null && conn != null && !conn.socket.isClosed() && !closed;
+        return apWelcome != null && conn != null && !conn.socket.isClosed();
     }
 
     @NotNull
@@ -492,7 +532,7 @@ public class Session implements Closeable {
                     .setUsername(apWelcome.getCanonicalUsername())
                     .setTyp(apWelcome.getReusableAuthCredentialsType())
                     .setAuthData(apWelcome.getReusableAuthCredentials())
-                    .build());
+                    .build(), true);
 
             LOGGER.info(String.format("Re-authenticated as %s!", apWelcome.getCanonicalUsername()));
         } catch (IOException | GeneralSecurityException | SpotifyAuthenticationException ex) {
@@ -583,6 +623,9 @@ public class Session implements Closeable {
         }
     }
 
+    /**
+     * Builder for setting up a {@link Session} object.
+     */
     public static class Builder {
         private final Inner inner;
         private Authentication.LoginCredentials loginCredentials = null;
@@ -598,6 +641,9 @@ public class Session implements Closeable {
             this.authConf = configuration;
         }
 
+        /**
+         * Authenticate with your Facebook account, will prompt to open a link in the browser.
+         */
         @NotNull
         public Builder facebook() throws IOException {
             try (FacebookAuthenticator authenticator = new FacebookAuthenticator()) {
@@ -608,12 +654,24 @@ public class Session implements Closeable {
             }
         }
 
+        /**
+         * Authenticate with a saved credentials blob.
+         *
+         * @param username Your Spotify username
+         * @param blob     The Base64-decoded blob
+         */
         @NotNull
         public Builder blob(String username, byte[] blob) throws GeneralSecurityException, IOException {
             loginCredentials = inner.decryptBlob(username, blob);
             return this;
         }
 
+        /**
+         * Authenticate with username and password. The credentials won't be saved.
+         *
+         * @param username Your Spotify username
+         * @param password Your Spotify password
+         */
         @NotNull
         public Builder userPass(@NotNull String username, @NotNull String password) {
             loginCredentials = Authentication.LoginCredentials.newBuilder()
@@ -624,6 +682,9 @@ public class Session implements Closeable {
             return this;
         }
 
+        /**
+         * Creates a connected and fully authenticated {@link Session} object.
+         */
         @NotNull
         public Session create() throws IOException, GeneralSecurityException, SpotifyAuthenticationException, MercuryClient.MercuryException {
             if (loginCredentials == null) {
@@ -695,7 +756,7 @@ public class Session implements Closeable {
         }
     }
 
-    private class ConnectionHolder {
+    private static class ConnectionHolder {
         final Socket socket;
         final DataInputStream in;
         final DataOutputStream out;
@@ -746,15 +807,16 @@ public class Session implements Closeable {
                             reconnect();
                         }, 2 * 60 + 5, TimeUnit.SECONDS);
 
+                        TimeProvider.updateWithPing(packet.payload);
+
                         try {
                             send(Packet.Type.Pong, packet.payload);
-                            LOGGER.trace(String.format("Handled Ping {payload: %s}", Utils.bytesToHex(packet.payload)));
                         } catch (IOException ex) {
                             LOGGER.fatal("Failed sending Pong!", ex);
                         }
                         break;
                     case PongAck:
-                        LOGGER.trace(String.format("Handled PongAck {payload: %s}", Utils.bytesToHex(packet.payload)));
+                        // Silent
                         break;
                     case CountryCode:
                         countryCode = new String(packet.payload);
@@ -763,9 +825,13 @@ public class Session implements Closeable {
                     case LicenseVersion:
                         ByteBuffer licenseVersion = ByteBuffer.wrap(packet.payload);
                         short id = licenseVersion.getShort();
-                        byte[] buffer = new byte[licenseVersion.get()];
-                        licenseVersion.get(buffer);
-                        LOGGER.info(String.format("Received LicenseVersion: %d, %s", id, new String(buffer)));
+                        if (id != 0) {
+                            byte[] buffer = new byte[licenseVersion.get()];
+                            licenseVersion.get(buffer);
+                            LOGGER.info(String.format("Received LicenseVersion: %d, %s", id, new String(buffer)));
+                        } else {
+                            LOGGER.info(String.format("Received LicenseVersion: %d", id));
+                        }
                         break;
                     case Unknown_0x10:
                         LOGGER.debug("Received 0x10: " + Utils.bytesToHex(packet.payload));
@@ -774,15 +840,15 @@ public class Session implements Closeable {
                     case MercuryUnsub:
                     case MercuryEvent:
                     case MercuryReq:
-                        mercuryClient.dispatch(packet);
+                        mercury().dispatch(packet);
                         break;
                     case AesKey:
                     case AesKeyError:
-                        audioKeyManager.dispatch(packet);
+                        audioKey().dispatch(packet);
                         break;
                     case ChannelError:
                     case StreamChunkRes:
-                        channelManager.dispatch(packet);
+                        channel().dispatch(packet);
                         break;
                     default:
                         LOGGER.info("Skipping " + cmd.name());

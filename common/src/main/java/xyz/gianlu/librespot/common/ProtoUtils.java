@@ -3,9 +3,11 @@ package xyz.gianlu.librespot.common;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.protobuf.Descriptors;
 import com.spotify.connectstate.model.Player;
 import com.spotify.connectstate.model.Player.ContextPlayerOptions;
 import com.spotify.metadata.proto.Metadata;
+import com.spotify.playlist4.proto.Playlist4ApiProto;
 import org.jetbrains.annotations.Contract;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -14,6 +16,7 @@ import spotify.player.proto.ContextPlayerOptionsOuterClass;
 import spotify.player.proto.ContextTrackOuterClass.ContextTrack;
 import spotify.player.proto.PlayOriginOuterClass;
 
+import java.lang.reflect.Field;
 import java.util.*;
 
 import static spotify.player.proto.ContextOuterClass.Context;
@@ -23,6 +26,80 @@ import static spotify.player.proto.ContextOuterClass.Context;
  */
 public final class ProtoUtils {
     private ProtoUtils() {
+    }
+
+    public static void overrideDefaultValue(@NotNull Descriptors.FieldDescriptor desc, Object newDefault) throws IllegalAccessException, NoSuchFieldException {
+        Field f = Descriptors.FieldDescriptor.class.getDeclaredField("defaultValue");
+        f.setAccessible(true);
+        f.set(desc, newDefault);
+    }
+
+    @NotNull
+    public static List<Playlist4ApiProto.Op.Kind> opsKindList(@NotNull List<Playlist4ApiProto.Op> ops) {
+        List<Playlist4ApiProto.Op.Kind> kinds = new ArrayList<>(ops.size());
+        for (Playlist4ApiProto.Op op : ops) kinds.add(op.getKind());
+        return kinds;
+    }
+
+    @NotNull
+    private static JsonObject mapToJson(@NotNull Map<String, String> map) {
+        JsonObject obj = new JsonObject();
+        for (String key : map.keySet()) obj.addProperty(key, map.get(key));
+        return obj;
+    }
+
+    @NotNull
+    private static JsonObject trackToJson(@NotNull Player.ProvidedTrack track) {
+        JsonObject obj = new JsonObject();
+        obj.addProperty("uri", track.getUri());
+        obj.addProperty("uid", track.getUid());
+        obj.add("metadata", mapToJson(track.getMetadataMap()));
+        return obj;
+    }
+
+    @NotNull
+    private static JsonObject trackToJson(@NotNull ContextTrack track) {
+        JsonObject obj = new JsonObject();
+        obj.addProperty("uri", track.getUri());
+        obj.addProperty("uid", track.getUid());
+        obj.add("metadata", mapToJson(track.getMetadataMap()));
+        return obj;
+    }
+
+    @NotNull
+    public static JsonObject craftContextStateCombo(@NotNull Player.PlayerStateOrBuilder ps, @NotNull List<ContextTrack> tracks) {
+        JsonObject context = new JsonObject();
+        context.addProperty("uri", ps.getContextUri());
+        context.addProperty("url", ps.getContextUrl());
+        context.add("metadata", mapToJson(ps.getContextMetadataMap()));
+
+        JsonArray pages = new JsonArray(1);
+        context.add("pages", pages);
+
+        JsonObject page = new JsonObject();
+        page.addProperty("page_url", "");
+        page.addProperty("next_page_url", "");
+        JsonArray tracksJson = new JsonArray(tracks.size());
+        for (ContextTrack t : tracks) tracksJson.add(trackToJson(t));
+        page.add("tracks", tracksJson);
+        page.add("metadata", mapToJson(ps.getPageMetadataMap()));
+        pages.add(page);
+
+
+        JsonObject state = new JsonObject();
+
+        JsonObject options = new JsonObject();
+        options.addProperty("shuffling_context", ps.getOptions().getShufflingContext());
+        options.addProperty("repeating_context", ps.getOptions().getRepeatingContext());
+        options.addProperty("repeating_track", ps.getOptions().getRepeatingTrack());
+        state.add("options", options);
+        state.add("skip_to", new JsonObject());
+        state.add("track", trackToJson(ps.getTrack()));
+
+        JsonObject result = new JsonObject();
+        result.add("context", context);
+        result.add("state", state);
+        return result;
     }
 
     @NotNull
@@ -126,8 +203,10 @@ public final class ProtoUtils {
                 builder.putMetadata(key, metadata.get(key).getAsString());
         }
 
-        for (JsonElement elm : obj.getAsJsonArray("pages"))
-            builder.addPages(jsonToContextPage(elm.getAsJsonObject()));
+        if (obj.has("pages")) {
+            for (JsonElement elm : obj.getAsJsonArray("pages"))
+                builder.addPages(jsonToContextPage(elm.getAsJsonObject()));
+        }
 
         return builder.build();
     }
@@ -240,6 +319,10 @@ public final class ProtoUtils {
     }
 
     public static void copyOverMetadata(@NotNull ContextTrack from, @NotNull ContextTrack.Builder to) {
+        to.putAllMetadata(from.getMetadataMap());
+    }
+
+    public static void copyOverMetadata(@NotNull ContextTrack from, @NotNull Player.ProvidedTrack.Builder to) {
         to.putAllMetadata(from.getMetadataMap());
     }
 }
